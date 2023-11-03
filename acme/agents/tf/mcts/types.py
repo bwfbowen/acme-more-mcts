@@ -14,7 +14,7 @@
 
 """Type aliases and assumptions that are specific to the MCTS agent."""
 
-from typing import Callable, Tuple, Union
+from typing import Callable, Tuple, Union, List
 import numpy as np
 
 # pylint: disable=invalid-name
@@ -40,3 +40,6 @@ EvaluationFn = Callable[[Observation], Tuple[Probs, Value]]
 
 # Notation: dimensions are scalar and discrete (integral).
 Dim = Union[int, np.int32, np.int64]
+
+# Notation: the 'action converter function' maps list of action indexes -> (dim, continuous value / discrete)
+ActionConverter = Callable[[List[Action]], Union[int, np.ndarray]]

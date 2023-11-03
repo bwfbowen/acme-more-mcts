@@ -60,6 +60,36 @@ class TestSearch(parameterized.TestCase):
     if env._paddle_x < env._ball_x:
       self.assertEqual(best_action, 2)
 
+  def test_sampled_catch(self):
+    env = catch.Catch(rows=2, seed=1)
+    num_actions = env.action_spec().num_values
+    model = simulator.Simulator(env)
+    eval_fn = lambda _: ((np.ones(num_actions) / num_actions).reshape(1, num_actions), 0.)
+    sample_fn = lambda _: ([list(range(num_actions))], [np.ones(num_actions) / num_actions])
+    convert_fn = lambda x: x[0]
+
+    timestep = env.reset()
+    model.reset()
+
+    search_policy = search.factored_puct 
+
+    root = search.sampled_mcts(
+        observation=timestep.observation,
+        model=model,
+        search_policy=search_policy,
+        sample_policy=sample_fn,
+        evaluation=eval_fn,
+        num_simulations=100,
+        action_converter=convert_fn)
+
+    values = np.array([c.value for c in root.children[0].values()])
+    best_action = search.argmax(values)
+    if env._paddle_x > env._ball_x:
+      self.assertEqual(best_action, 0)
+    if env._paddle_x == env._ball_x:
+      self.assertEqual(best_action, 1)
+    if env._paddle_x < env._ball_x:
+      self.assertEqual(best_action, 2)
 
 if __name__ == '__main__':
   absltest.main()
