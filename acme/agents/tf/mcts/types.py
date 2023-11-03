@@ -37,3 +37,6 @@ Value = float
 
 # Notation: the 'evaluation function' maps observations -> (probs, value).
 EvaluationFn = Callable[[Observation], Tuple[Probs, Value]]
+
+# Notation: dimensions are scalar and discrete (integral).
+Dim = Union[int, np.int32, np.int64]

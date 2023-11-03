@@ -97,3 +97,85 @@ class MCTS(agent.Agent):
         min_observations=10,
         observations_per_step=1,
     )
+
+
+class SampledMCTS(agent.Agent):
+  """A single-process sampled MCTS agent."""
+
+  def __init__(
+      self,
+      network: snt.Module,
+      model: models.Model,
+      optimizer: snt.Optimizer,
+      n_step: int,
+      discount: float,
+      replay_capacity: int,
+      num_simulations: int,
+      environment_spec: specs.EnvironmentSpec,
+      batch_size: int, 
+      k_bins: int = 5,
+      num_samples: int = 20,
+  ):
+
+    if isinstance(environment_spec.actions, specs.BoundedArray):
+        _pi_shape = (np.prod(environment_spec.actions.shape), k_bins)
+        num_samples = np.prod(_pi_shape) if num_samples is None else num_samples
+    elif isinstance(environment_spec.actions, specs.DiscreteArray):
+        _pi_shape = (1, environment_spec.actions.num_values) 
+        num_samples = environment_spec.actions.num_values if num_samples is None else num_samples
+
+    extra_spec = {
+        'pi':
+            specs.Array(
+                shape=_pi_shape, dtype=np.float32)
+    }
+    # Create a replay server for storing transitions.
+    replay_table = reverb.Table(
+        name=adders.DEFAULT_PRIORITY_TABLE,
+        sampler=reverb.selectors.Uniform(),
+        remover=reverb.selectors.Fifo(),
+        max_size=replay_capacity,
+        rate_limiter=reverb.rate_limiters.MinSize(1),
+        signature=adders.NStepTransitionAdder.signature(
+            environment_spec, extra_spec))
+    self._server = reverb.Server([replay_table], port=None)
+
+    # The adder is used to insert observations into replay.
+    address = f'localhost:{self._server.port}'
+    adder = adders.NStepTransitionAdder(
+        client=reverb.Client(address),
+        n_step=n_step,
+        discount=discount)
+
+    # The dataset provides an interface to sample from replay.
+    dataset = datasets.make_reverb_dataset(server_address=address)
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+
+    tf2_utils.create_variables(network, [environment_spec.observations])
+
+    # Now create the agent components: actor & learner.
+    actor = acting.SampledMCTSActor(
+        environment_spec=environment_spec,
+        model=model,
+        network=network,
+        discount=discount,
+        adder=adder,
+        num_simulations=num_simulations,
+        pi_shape=_pi_shape,
+        num_samples=num_samples,
+    )
+
+    learner = learning.AZLearner(
+        network=network,
+        optimizer=optimizer,
+        dataset=dataset,
+        discount=discount,
+    )
+
+    # The parent class combines these together into one 'agent'.
+    super().__init__(
+        actor=actor,
+        learner=learner,
+        min_observations=10,
+        observations_per_step=1,
+    )
