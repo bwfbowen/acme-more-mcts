@@ -17,7 +17,7 @@
 import acme
 from acme import specs
 from acme.agents.tf import mcts
-from acme.agents.tf.mcts.models import simulator
+from acme.agents.tf.mcts.models import simulator, mlp
 from acme.testing import fakes
 from acme.tf import networks
 import numpy as np
@@ -43,6 +43,7 @@ class MCTSTest(absltest.TestCase):
         snt.nets.MLP([50, 50]),
         networks.PolicyValueHead(spec.actions.num_values),
     ])
+    
     model = simulator.Simulator(environment)
     optimizer = snt.optimizers.Adam(1e-3)
 
@@ -63,6 +64,51 @@ class MCTSTest(absltest.TestCase):
     loop = acme.EnvironmentLoop(environment, agent)
     loop.run(num_episodes=2)
 
+  def test_repr_mcts(self):
+    # Create a fake environment to test with.
+    num_actions = 5
+    environment = fakes.DiscreteEnvironment(
+        num_actions=num_actions,
+        num_observations=10,
+        obs_dtype=np.float32,
+        episode_length=10)
+    spec = specs.make_environment_spec(environment)
+
+    eval_network = snt.Sequential([
+        snt.Flatten(),
+        snt.nets.MLP([50, 50]),
+        networks.PolicyValueHead(spec.actions.num_values),
+    ])
+
+    repr_network = snt.Sequential([
+        snt.Flatten(),
+        snt.nets.MLP([50, 50]),
+    ])
+    
+    model = mlp.ReprMLPModel(repr_network=repr_network, 
+                             environment_spec=spec,
+                             replay_capacity=1000,
+                             batch_size=16,
+                             hidden_sizes=(50,),)
+    optimizer = snt.optimizers.Adam(1e-3)
+
+    # Construct the agent.
+    agent = mcts.ReprMCTS(
+        environment_spec=spec,
+        repr_network=repr_network,
+        eval_network=eval_network,
+        model=model,
+        optimizer=optimizer,
+        n_step=1,
+        discount=1.,
+        replay_capacity=100,
+        num_simulations=10,
+        batch_size=10)
+
+    # Try running the environment loop. We have no assertions here because all
+    # we care about is that the agent runs without raising any errors.
+    loop = acme.EnvironmentLoop(environment, agent)
+    loop.run(num_episodes=2)
 
 if __name__ == '__main__':
   absltest.main()

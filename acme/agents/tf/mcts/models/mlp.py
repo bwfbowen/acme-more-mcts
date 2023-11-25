@@ -63,7 +63,6 @@ class MLPTransitionModel(snt.Module):
 
     embedded_state = snt.Flatten()(state)
     embedded_action = tf.one_hot(action, depth=self._num_actions)
-
     embedding = tf.concat([embedded_state, embedded_action], axis=-1)
 
     # Predict the next state, reward, and termination.
@@ -218,3 +217,150 @@ class MLPModel(base.Model):
   @property
   def needs_reset(self) -> bool:
     return self._needs_reset
+
+
+class ReprMLPTransitionModel(snt.Module):
+  """This uses MLPs to model (s, a) -> (r, d, s')."""
+
+  def __init__(
+      self,
+      repr_spec,
+      environment_spec: specs.EnvironmentSpec,
+      hidden_sizes: Tuple[int, ...],
+  ):
+    super(ReprMLPTransitionModel, self).__init__(name='mlp_transition_model')
+
+    # Get num actions/observation shape.
+    self._num_actions = environment_spec.actions.num_values
+    self._input_shape = repr_spec.shape
+    self._flat_shape = int(np.prod(self._input_shape))
+
+    # Prediction networks.
+    self._state_network = snt.Sequential([
+        snt.nets.MLP(hidden_sizes + (self._flat_shape,)),
+        snt.Reshape(self._input_shape)
+    ])
+    self._reward_network = snt.Sequential([
+        snt.nets.MLP(hidden_sizes + (1,)),
+        lambda r: tf.squeeze(r, axis=-1),
+    ])
+    self._discount_network = snt.Sequential([
+        snt.nets.MLP(hidden_sizes + (1,)),
+        lambda d: tf.squeeze(d, axis=-1),
+    ])
+
+  def __call__(self, state: tf.Tensor,
+               action: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+
+    embedded_state = snt.Flatten()(state)
+    embedded_action = tf.one_hot(action, depth=self._num_actions)
+    embedding = tf.concat([embedded_state, embedded_action], axis=-1)
+
+    # Predict the next state, reward, and termination.
+    next_state = self._state_network(embedding)
+    reward = self._reward_network(embedding)
+    discount_logits = self._discount_network(embedding)
+
+    return next_state, reward, discount_logits
+  
+
+class ReprMLPModel(MLPModel):
+  def __init__(
+      self,
+      repr_network: snt.Module,
+      environment_spec: specs.EnvironmentSpec,
+      replay_capacity: int,
+      batch_size: int,
+      hidden_sizes: Tuple[int, ...],
+      learning_rate: float = 1e-3,
+      terminal_tol: float = 1e-3,
+  ):
+    repr_output_spec = tf2_utils.create_variables(repr_network, [environment_spec.observations])
+    self._repr_network = tf.function(repr_network)
+    self._obs_spec = environment_spec.observations
+    self._action_spec = environment_spec.actions
+    # Hyperparameters.
+    self._batch_size = batch_size
+    self._terminal_tol = terminal_tol
+
+    # Modelling
+    self._replay = replay.Replay(replay_capacity)
+    self._transition_model = ReprMLPTransitionModel(repr_output_spec, environment_spec, hidden_sizes)
+    self._optimizer = snt.optimizers.Adam(learning_rate)
+    self._forward = tf.function(self._transition_model)
+    tf2_utils.create_variables(
+        self._transition_model, [repr_output_spec, self._action_spec])
+    self._variables = self._transition_model.trainable_variables + repr_network.trainable_variables
+
+    # Model state.
+    self._needs_reset = True
+
+  @tf.function
+  def _step(
+      self,
+      o_t: tf.Tensor,
+      a_t: tf.Tensor,
+      r_t: tf.Tensor,
+      d_t: tf.Tensor,
+      o_tp1: tf.Tensor,
+  ) -> tf.Tensor:
+
+    with tf.GradientTape() as tape:
+      next_state, reward, discount = self._transition_model(self._repr_network(o_t), a_t)
+
+      state_loss = tf.square(next_state - tf.stop_gradient(self._repr_network(o_tp1)))
+      reward_loss = tf.square(reward - r_t)
+      discount_loss = tf.nn.sigmoid_cross_entropy_with_logits(d_t, discount)
+
+      loss = sum([
+          tf.reduce_mean(state_loss),
+          tf.reduce_mean(reward_loss),
+          tf.reduce_mean(discount_loss),
+      ])
+
+    gradients = tape.gradient(loss, self._variables)
+    self._optimizer.apply(gradients, self._variables)
+
+    return loss
+  
+  def update(
+      self,
+      timestep: dm_env.TimeStep,
+      action: types.Action,
+      next_timestep: dm_env.TimeStep,
+  ) -> dm_env.TimeStep:
+    # Add the true transition to replay.
+    transition = [
+        timestep.observation,
+        action,
+        next_timestep.reward,
+        next_timestep.discount,
+        next_timestep.observation,
+    ]
+    self._replay.add(transition)
+
+    # Step the model to generate a synthetic transition.
+    ts = self.step(action)
+    
+    # Copy the *true* state's representation on update.
+    self._state = self._repr_network(tf.expand_dims(next_timestep.observation, axis=0)).numpy().squeeze(0).copy()
+
+    if ts.last() or next_timestep.last():
+      # Model believes that a termination has happened.
+      # This will result in a crash during planning if the true environment
+      # didn't terminate here as well. So, we indicate that we need a reset.
+      self._needs_reset = True
+
+    # Sample from replay and do SGD.
+    if self._replay.size >= self._batch_size:
+      batch = self._replay.sample(self._batch_size)
+      self._step(*batch)
+
+    return ts
+  
+  def reset(self, initial_state: Optional[types.Observation] = None):
+    if initial_state is None:
+      raise ValueError('Model must be reset with an initial state.')
+    _initial_state = self._repr_network(tf.expand_dims(initial_state, axis=0)).numpy().squeeze(0)
+    
+    return super().reset(_initial_state)

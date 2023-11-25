@@ -14,5 +14,5 @@
 
 """Monte-Carlo tree search (MCTS) agent."""
 
-from acme.agents.tf.mcts.agent import MCTS
+from acme.agents.tf.mcts.agent import MCTS, ReprMCTS
 from acme.agents.tf.mcts.agent_distributed import DistributedMCTS
