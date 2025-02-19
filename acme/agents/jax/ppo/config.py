@@ -62,6 +62,7 @@ class PPOConfig:
       normalization.
   """
   unroll_length: int = 8
+  period: int = 8
   num_minibatches: int = 8
   num_epochs: int = 2
   batch_size: int = 256

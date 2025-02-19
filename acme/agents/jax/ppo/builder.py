@@ -136,7 +136,7 @@ class PPOBuilder(
     return adders_reverb.SequenceAdder(
         client=replay_client,
         priority_fns={self._config.replay_table_name: None},
-        period=self._sequence_length - 1,
+        period=self._config.period,
         sequence_length=self._sequence_length,
     )
 
